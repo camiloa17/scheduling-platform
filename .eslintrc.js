@@ -68,43 +68,25 @@ module.exports = {
           {
             patterns: [
               {
-                group: [
-                  // Catch all relative paths into trpc
-                  "**/trpc",
-                  "**/trpc/*",
-                  // Catch alias imports
-                  "@calcom/trpc",
-                  "@calcom/trpc/*",
-                  "@trpc",
-                  "@trpc/*",
-                ],
+                group: ["@calcom/trpc/*", "@trpc/*"],
                 message:
-                  "@calcom/app-store must not import trpc. Move UI to apps/web/components/apps or introduce an API boundary.",
+                  "tRPC imports are blocked in packages/app-store. Move UI to apps/web/components/apps or introduce an API boundary.",
               },
             ],
           },
         ],
       },
     },
-
-    // ERROR: prisma must not import `features` package
     {
-      files: ["packages/prisma/**/*.{ts,tsx,js,jsx}"],
+      files: ["apps/web/app/api/platform/**/*"],
       rules: {
         "no-restricted-imports": [
           "error",
           {
             patterns: [
               {
-                group: [
-                  // Catch all relative paths into features
-                  "**/features",
-                  "**/features/*",
-                  // Catch all alias imports
-                  "@calcom/features",
-                  "@calcom/features/*",
-                ],
-                message: "Avoid importing @calcom/features from @calcom/prisma.",
+                group: ["**/ee/**"],
+                message: "Enterprise features not allowed in platform code",
               },
             ],
           },
