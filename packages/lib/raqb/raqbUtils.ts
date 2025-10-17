@@ -1,7 +1,3 @@
-import type { JsonGroup, JsonItem, JsonRule, JsonTree } from "react-awesome-query-builder";
-import type { Config } from "react-awesome-query-builder";
-import { Utils as QbUtils } from "react-awesome-query-builder";
-
 import { getQueryBuilderConfigForAttributes } from "@calcom/app-store/routing-forms/lib/getQueryBuilderConfig";
 import type { LocalRoute } from "@calcom/app-store/routing-forms/types/types";
 import type { dynamicFieldValueOperands } from "@calcom/lib/raqb/types";
@@ -15,6 +11,39 @@ import { AttributeType } from "@calcom/prisma/enums";
 
 import { resolveQueryValue } from "./resolveQueryValue";
 import { caseInsensitive } from "./utils";
+
+type QueryProperties = {
+  field?: string;
+  valueError?: (string | null)[];
+  valueType?: string[];
+};
+
+export type JsonRule = {
+  id?: string;
+  type: "rule" | string;
+  properties?: QueryProperties;
+};
+
+export type JsonGroup = {
+  id?: string;
+  type: "group" | string;
+  children1?: Record<string, JsonItem>;
+};
+
+export type JsonItem = JsonRule | JsonGroup;
+
+export type JsonTree = JsonGroup & {
+  type: string;
+};
+
+type SimpleConfig = Record<string, unknown>;
+
+function generateId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2);
+}
 
 function ensureArray(value: string | string[]) {
   return typeof value === "string" ? [value] : value;
@@ -70,7 +99,7 @@ export const raqbQueryValueUtils = {
 };
 
 export function buildEmptyQueryValue() {
-  return { id: QbUtils.uuid(), type: "group" as const };
+  return { id: generateId(), type: "group" as const };
 }
 
 export const buildStateFromQueryValue = ({
@@ -81,16 +110,15 @@ export const buildStateFromQueryValue = ({
    * Allow null as the queryValue as initially there could be no queryValue and without that we can't build the state and can't show the UI
    */
   queryValue: JsonTree | null;
-  config: Config;
+  config: SimpleConfig;
 }) => {
   const queryValueToUse = queryValue || buildEmptyQueryValue();
-  const immutableTree = QbUtils.checkTree(QbUtils.loadTree(queryValueToUse), config);
   return {
     state: {
-      tree: immutableTree,
+      tree: queryValueToUse,
       config,
     },
-    queryValue: QbUtils.getTree(immutableTree),
+    queryValue: queryValueToUse,
   };
 };
 

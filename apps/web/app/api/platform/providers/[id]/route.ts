@@ -26,13 +26,13 @@ async function getHandler(req: NextRequest, { params }: { params: Promise<Params
   if (typeof id !== "string") {
     return NextResponse.json({ error: "id is not a string" }, { status: 400 });
   }
-  const mentorId = parseInt(id);
-  if (isNaN(mentorId) || mentorId <= 0) {
-    return NextResponse.json({ error: "Invalid mentor ID" }, { status: 400 });
+  const providerId = parseInt(id);
+  if (isNaN(providerId) || providerId <= 0) {
+    return NextResponse.json({ error: "Invalid provider ID" }, { status: 400 });
   }
 
   const schedules = await prisma.schedule.findMany({
-    where: { userId: mentorId },
+    where: { userId: providerId },
     select: {
       id: true,
       name: true,
@@ -68,16 +68,16 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
   if (typeof id !== "string") {
     return NextResponse.json({ error: "id is not a string" }, { status: 400 });
   }
-  const mentorId = parseInt(id);
-  if (isNaN(mentorId) || mentorId <= 0) {
-    return NextResponse.json({ error: "Invalid mentor ID" }, { status: 400 });
+  const providerId = parseInt(id);
+  if (isNaN(providerId) || providerId <= 0) {
+    return NextResponse.json({ error: "Invalid provider ID" }, { status: 400 });
   }
   const body = await parseRequestData(req);
   const data = availabilitySchema.parse(body);
 
   // Clear existing schedules
   await prisma.schedule.deleteMany({
-    where: { userId: mentorId },
+    where: { userId: providerId },
   });
 
   // Create new schedules
@@ -85,7 +85,7 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
     await prisma.schedule.create({
       data: {
         name: schedule.name,
-        userId: mentorId,
+        userId: providerId,
         availability: {
           create: schedule.availability.map((slot) => ({
             days: slot.days,

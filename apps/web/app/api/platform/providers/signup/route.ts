@@ -8,19 +8,38 @@ import { emailRegex } from "@calcom/lib/emailSchema";
 import { HttpError } from "@calcom/lib/http-error";
 import logger from "@calcom/lib/logger";
 import slugify from "@calcom/lib/slugify";
-import { validateAndGetCorrectedUsernameAndEmail } from "@calcom/lib/validateUsername";
 import { prisma } from "@calcom/prisma";
 import { IdentityProvider } from "@calcom/prisma/enums";
 
-export const mentorSignupSchema = z.object({
-  username: z.string().optional(),
+export const providerSignupSchema = z.object({
   email: z.string().regex(emailRegex, { message: "Invalid email" }),
   name: z.string(),
-  sessionLength: z.number().min(15).max(240).optional().default(60),
-  // No password, no other user types - just mentors
+  // No password, no other user types - just providers
 });
 
-export default async function handler(req: NextRequest) {
+const EVENT_DURATION_OPTIONS = [45, 60, 90];
+
+const EVENT_DEFINITIONS = [
+  {
+    title: "OneOnOne",
+    slugBase: "one-on-one",
+    description: "One-on-one provider session",
+  },
+  {
+    title: "DiscoveryCall",
+    slugBase: "discovery-call",
+    description: "Initial discovery call to understand requester's goals",
+  },
+  {
+    title: "ActionPlan",
+    slugBase: "action-plan",
+    description: "Follow-up focused on creating an actionable plan",
+  },
+];
+
+const INTERNAL_CALENDAR_INTEGRATION = "caldav_calendar";
+
+async function handler(req: NextRequest) {
   let body = {};
   try {
     body = await parseRequestData(req);
@@ -31,86 +50,120 @@ export default async function handler(req: NextRequest) {
     logger.error(e);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });
   }
-  const mentorData = mentorSignupSchema.parse(body);
+  const providerData = providerSignupSchema.parse(body);
 
-  const username = slugify(mentorData.username || mentorData.email.split("@")[0]);
-  const userEmail = mentorData.email.toLowerCase();
+  const userEmail = providerData.email.toLowerCase();
 
-  if (!username) {
-    return NextResponse.json({ message: "Invalid username" }, { status: 422 });
-  }
-
-  return handleMentorSignup({
-    username,
-    userEmail,
-    sessionLength: mentorData.sessionLength,
+  return handleProviderSignup({
+    name: providerData.name,
+    email: userEmail,
   });
 }
 
-async function handleMentorSignup({
-  username,
-  userEmail,
-  sessionLength,
+async function handleProviderSignup({
+  email,
   name,
 }: {
-  username: string;
-  userEmail: string;
-  sessionLength: number;
-  name?: string;
+  email: string;
+  name: string;
 }) {
-  // Validate username availability
-  const userValidation = await validateAndGetCorrectedUsernameAndEmail({
-    username,
-    email: userEmail,
-    isSignup: true,
-  });
+  const existingUser = await prisma.user.findUnique({ where: { email } });
 
-  if (!userValidation.isValid) {
-    return NextResponse.json({ message: "Username or email is already taken" }, { status: 409 });
+  if (existingUser) {
+    return NextResponse.json({ message: "Provider already exists for this email" }, { status: 409 });
   }
 
-  const correctedUsername = userValidation.username;
+  const tempUsername = `provider-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  // Create mentor user in Cal.com
-  const mentor = await prisma.user.upsert({
-    where: { email: userEmail },
-    update: {
-      username: correctedUsername,
-      emailVerified: new Date(Date.now()), // Auto-verify mentors
-      identityProvider: IdentityProvider.CAL,
-    },
-    create: {
-      username: correctedUsername,
-      email: userEmail,
-      name: name || correctedUsername,
-      emailVerified: new Date(Date.now()),
-      identityProvider: IdentityProvider.CAL,
-      // No password - mentors access via your platform
-    },
-  });
+  const result = await prisma.$transaction(async (tx) => {
+    const createdUser = await tx.user.create({
+      data: {
+        username: tempUsername,
+        email,
+        name,
+        emailVerified: new Date(),
+        identityProvider: IdentityProvider.CAL,
+      },
+    });
 
-  // Create default mentoring event type
-  const eventType = await prisma.eventType.create({
-    data: {
-      userId: mentor.id,
-      title: "Mentoring Session",
-      slug: "mentoring",
-      length: sessionLength,
-      description: "One-on-one mentoring session",
-    },
+    const finalUsernameBase = slugify(`${name}-${createdUser.id}`) || `provider-${createdUser.id}`;
+
+    const provider = await tx.user.update({
+      where: { id: createdUser.id },
+      data: { username: finalUsernameBase },
+    });
+
+    const eventTypes = await Promise.all(
+      EVENT_DEFINITIONS.map((definition) => {
+        const slug = `${definition.slugBase}-${provider.id}`;
+
+        return tx.eventType.create({
+          data: {
+            userId: provider.id,
+            title: definition.title,
+            slug,
+            description: definition.description,
+            length: 60,
+            metadata: {
+              multipleDuration: EVENT_DURATION_OPTIONS,
+            },
+            hosts: {
+              create: {
+                userId: provider.id,
+              },
+            },
+            users: {
+              connect: {
+                id: provider.id,
+              },
+            },
+          },
+        });
+      })
+    );
+
+    const calendarExternalId = `provider-${provider.id}-calendar`;
+
+    const destinationCalendar = await tx.destinationCalendar.create({
+      data: {
+        userId: provider.id,
+        integration: INTERNAL_CALENDAR_INTEGRATION,
+        externalId: calendarExternalId,
+        primaryEmail: provider.email,
+      },
+    });
+
+    await tx.selectedCalendar.create({
+      data: {
+        userId: provider.id,
+        integration: INTERNAL_CALENDAR_INTEGRATION,
+        externalId: calendarExternalId,
+      },
+    });
+
+    return { provider, eventTypes, destinationCalendar };
   });
 
   return NextResponse.json(
     {
-      message: "Mentor created successfully",
-      mentor: {
-        id: mentor.id,
-        email: mentor.email,
-        username: mentor.username,
+      message: "Provider created successfully",
+      provider: {
+        id: result.provider.id,
+        email: result.provider.email,
+        username: result.provider.username,
+        name: result.provider.name,
       },
-      eventType: {
+      eventTypes: result.eventTypes.map((eventType) => ({
         id: eventType.id,
         slug: eventType.slug,
+        title: eventType.title,
+        length: eventType.length,
+        durations: EVENT_DURATION_OPTIONS,
+      })),
+      destinationCalendar: {
+        id: result.destinationCalendar.id,
+        integration: result.destinationCalendar.integration,
+        externalId: result.destinationCalendar.externalId,
       },
     },
     { status: 201 }
