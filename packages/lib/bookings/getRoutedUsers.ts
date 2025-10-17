@@ -1,6 +1,4 @@
 import logger from "@calcom/lib/logger";
-import { findTeamMembersMatchingAttributeLogic } from "@calcom/lib/raqb/findTeamMembersMatchingAttributeLogic";
-import type { AttributesQueryValue } from "@calcom/lib/raqb/types";
 import { safeStringify } from "@calcom/lib/safeStringify";
 import type { RRResetInterval } from "@calcom/prisma/client";
 import type { RRTimestampBasis } from "@calcom/prisma/enums";
@@ -38,31 +36,6 @@ export const getRoutedUsersWithContactOwnerAndFixedUsers = <
   );
 };
 
-async function findMatchingTeamMembersIdsForEventRRSegment(eventType: EventType) {
-  if (!eventType) {
-    return null;
-  }
-
-  const isSegmentationDisabled = !eventType.assignAllTeamMembers || !eventType.assignRRMembersUsingSegment;
-
-  if (isSegmentationDisabled) {
-    return null;
-  }
-
-  if (!eventType.team || !eventType.team.parentId) {
-    return null;
-  }
-
-  const { teamMembersMatchingAttributeLogic } = await findTeamMembersMatchingAttributeLogic({
-    attributesQueryValue: eventType.rrSegmentQueryValue ?? null,
-    teamId: eventType.team.id,
-    orgId: eventType.team.parentId,
-  });
-  if (!teamMembersMatchingAttributeLogic) {
-    return teamMembersMatchingAttributeLogic;
-  }
-  return teamMembersMatchingAttributeLogic.map((member) => member.userId);
-}
 
 type BaseUser = {
   id: number;
@@ -82,7 +55,7 @@ type BaseHost<User extends BaseUser> = {
 export type EventType = {
   assignAllTeamMembers: boolean;
   assignRRMembersUsingSegment: boolean;
-  rrSegmentQueryValue: AttributesQueryValue | null | undefined;
+  rrSegmentQueryValue: unknown;
   team: {
     id: number;
     parentId: number | null;
@@ -204,13 +177,6 @@ export async function findMatchingHostsWithEventSegment<User extends BaseUser>({
     groupId: string | null;
   }[];
 }) {
-  const matchingRRTeamMembers = await findMatchingTeamMembersIdsForEventRRSegment({
-    ...eventType,
-    rrSegmentQueryValue: eventType.rrSegmentQueryValue ?? null,
-  });
-  const segmentedRoundRobinHosts = hosts.filter((host) => {
-    if (!matchingRRTeamMembers) return true;
-    return matchingRRTeamMembers.includes(host.user.id);
-  });
-  return segmentedRoundRobinHosts;
+  // Segmentation is bypassed, return the original host list unchanged.
+  return hosts;
 }

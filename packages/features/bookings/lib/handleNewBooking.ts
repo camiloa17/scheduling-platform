@@ -25,7 +25,6 @@ import { handlePayment } from "@calcom/features/bookings/lib/handlePayment";
 import { handleWebhookTrigger } from "@calcom/features/bookings/lib/handleWebhookTrigger";
 import { isEventTypeLoggingEnabled } from "@calcom/features/bookings/lib/isEventTypeLoggingEnabled";
 import type { CacheService } from "@calcom/features/calendar-cache/lib/getShouldServeCache";
-import AssignmentReasonRecorder from "@calcom/features/ee/round-robin/assignmentReason/AssignmentReasonRecorder";
 import { getUsernameList } from "@calcom/features/eventtypes/lib/defaultEvents";
 import { getEventName, updateHostInEventName } from "@calcom/features/eventtypes/lib/eventNaming";
 import type { FeaturesRepository } from "@calcom/features/flags/features.repository";
@@ -49,7 +48,6 @@ import {
 } from "@calcom/lib/delegationCredential/server";
 import { getCheckBookingAndDurationLimitsService } from "@calcom/lib/di/containers/BookingLimits";
 import { getCacheService } from "@calcom/lib/di/containers/Cache";
-import { getLuckyUserService } from "@calcom/lib/di/containers/LuckyUser";
 import { ErrorCode } from "@calcom/lib/errorCodes";
 import { getErrorFromUnknown } from "@calcom/lib/errors";
 import { extractBaseEmail } from "@calcom/lib/extract-base-email";
@@ -902,89 +900,6 @@ async function handler(
       );
 
       const luckyUsers: typeof users = [];
-      // loop through all non-fixed hosts and get the lucky users
-      // This logic doesn't run when contactOwner is used because in that case, luckUsers.length === 1
-      for (const [groupId, luckyUserPool] of Object.entries(luckyUserPools)) {
-        let luckUserFound = false;
-        while (luckyUserPool.length > 0 && !luckUserFound) {
-          const freeUsers = luckyUserPool.filter(
-            (user) => !luckyUsers.concat(notAvailableLuckyUsers).find((existing) => existing.id === user.id)
-          );
-          // no more freeUsers after subtracting notAvailableLuckyUsers from luckyUsers :(
-          if (freeUsers.length === 0) break;
-          assertNonEmptyArray(freeUsers); // make sure TypeScript knows it too with an assertion; the error will never be thrown.
-          // freeUsers is ensured
-
-          const userIdsSet = new Set(users.map((user) => user.id));
-          const firstUserOrgId = await getOrgIdFromMemberOrTeamId({
-            memberId: eventTypeWithUsers.users[0].id ?? null,
-            teamId: eventType.teamId,
-          });
-          const luckyUserService = getLuckyUserService();
-          const newLuckyUser = await luckyUserService.getLuckyUser({
-            // find a lucky user that is not already in the luckyUsers array
-            availableUsers: freeUsers,
-            // only hosts from the same group
-            allRRHosts: (
-              await enrichHostsWithDelegationCredentials({
-                orgId: firstUserOrgId ?? null,
-                hosts: eventTypeWithUsers.hosts,
-              })
-            ).filter(
-              (host) =>
-                !host.isFixed &&
-                userIdsSet.has(host.user.id) &&
-                (host.groupId === groupId || (!host.groupId && groupId === DEFAULT_GROUP_ID))
-            ),
-            eventType,
-            routingFormResponse,
-            meetingStartTime: new Date(reqBody.start),
-          });
-          if (!newLuckyUser) {
-            break; // prevent infinite loop
-          }
-          if (
-            input.bookingData.isFirstRecurringSlot &&
-            eventType.schedulingType === SchedulingType.ROUND_ROBIN
-          ) {
-            // for recurring round robin events check if lucky user is available for next slots
-            try {
-              for (
-                let i = 0;
-                i < input.bookingData.allRecurringDates.length &&
-                i < input.bookingData.numSlotsToCheckForAvailability;
-                i++
-              ) {
-                const start = input.bookingData.allRecurringDates[i].start;
-                const end = input.bookingData.allRecurringDates[i].end;
-
-                await ensureAvailableUsers(
-                  { ...eventTypeWithUsers, users: [newLuckyUser] },
-                  {
-                    dateFrom: dayjs(start).tz(reqBody.timeZone).format(),
-                    dateTo: dayjs(end).tz(reqBody.timeZone).format(),
-                    timeZone: reqBody.timeZone,
-                    originalRescheduledBooking,
-                  },
-                  loggerWithEventDetails,
-                  shouldServeCache
-                );
-              }
-              // if no error, then lucky user is available for the next slots
-              luckyUsers.push(newLuckyUser);
-              luckUserFound = true;
-            } catch {
-              notAvailableLuckyUsers.push(newLuckyUser);
-              loggerWithEventDetails.info(
-                `Round robin host ${newLuckyUser.name} not available for first two slots. Trying to find another host.`
-              );
-            }
-          } else {
-            luckyUsers.push(newLuckyUser);
-            luckUserFound = true;
-          }
-        }
-      }
 
       // ALL fixed users must be available
       if (fixedUserPool.length !== users.filter((user) => user.isFixed).length) {
@@ -1540,29 +1455,6 @@ async function handler(
             ? formatAvailabilitySnapshot(organizerUserAvailability.availabilityData)
             : null,
         });
-      }
-
-      // If it's a round robin event, record the reason for the host assignment
-      if (eventType.schedulingType === SchedulingType.ROUND_ROBIN) {
-        if (reqBody.crmOwnerRecordType && reqBody.crmAppSlug && contactOwnerEmail && routingFormResponseId) {
-          assignmentReason = await AssignmentReasonRecorder.CRMOwnership({
-            bookingId: booking.id,
-            crmAppSlug: reqBody.crmAppSlug,
-            teamMemberEmail: contactOwnerEmail,
-            recordType: reqBody.crmOwnerRecordType,
-            routingFormResponseId,
-            recordId: crmRecordId,
-          });
-        } else if (routingFormResponseId && teamId) {
-          assignmentReason = await AssignmentReasonRecorder.routingFormRoute({
-            bookingId: booking.id,
-            routingFormResponseId,
-            organizerId: organizerUser.id,
-            teamId,
-            isRerouting: !!reroutingFormResponses,
-            reroutedByEmail: reqBody.rescheduledBy,
-          });
-        }
       }
 
       const updatedEvtWithUid = CalendarEventBuilder.fromEvent(evt)
