@@ -6,6 +6,11 @@ import { z } from "zod";
 
 import { prisma } from "@calcom/prisma";
 
+const dateOverrideSchema = z.object({
+  start: z.coerce.date(),
+  end: z.coerce.date(),
+});
+
 const availabilitySchema = z.object({
   schedules: z.array(
     z.object({
@@ -17,6 +22,7 @@ const availabilitySchema = z.object({
           endTime: z.string(), // "17:00"
         })
       ),
+      dateOverrides: z.array(dateOverrideSchema).optional(),
     })
   ),
 });
@@ -82,17 +88,27 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
 
   // Create new schedules
   for (const schedule of data.schedules) {
+    const overrides = schedule.dateOverrides ?? [];
+    const overrideAvailability = overrides.map((override) => ({
+      date: override.start,
+      startTime: override.start,
+      endTime: override.end,
+    }));
+    const weeklyAvailability = schedule.availability.map((slot) => ({
+      days: slot.days,
+      startTime: new Date(`1970-01-01T${slot.startTime}:00.000Z`),
+      endTime: new Date(`1970-01-01T${slot.endTime}:00.000Z`),
+    }));
+    const availabilityEntries = [...weeklyAvailability, ...overrideAvailability];
     await prisma.schedule.create({
       data: {
         name: schedule.name,
         userId: providerId,
-        availability: {
-          create: schedule.availability.map((slot) => ({
-            days: slot.days,
-            startTime: new Date(`1970-01-01T${slot.startTime}:00.000Z`),
-            endTime: new Date(`1970-01-01T${slot.endTime}:00.000Z`),
-          })),
-        },
+        availability: availabilityEntries.length
+          ? {
+            create: availabilityEntries,
+          }
+          : undefined,
       },
     });
   }
