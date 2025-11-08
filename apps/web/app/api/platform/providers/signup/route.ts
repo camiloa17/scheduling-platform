@@ -14,6 +14,7 @@ import { IdentityProvider } from "@calcom/prisma/enums";
 export const providerSignupSchema = z.object({
   email: z.string().regex(emailRegex, { message: "Invalid email" }),
   name: z.string(),
+  timeZone: z.string().optional(),
   // No password, no other user types - just providers
 });
 
@@ -57,10 +58,19 @@ async function handler(req: NextRequest) {
   return handleProviderSignup({
     name: providerData.name,
     email: userEmail,
+    timeZone: providerData.timeZone,
   });
 }
 
-async function handleProviderSignup({ email, name }: { email: string; name: string }) {
+async function handleProviderSignup({
+  email,
+  name,
+  timeZone,
+}: {
+  email: string;
+  name: string;
+  timeZone?: string;
+}) {
   const existingUser = await prisma.user.findUnique({ where: { email } });
 
   if (existingUser) {
@@ -95,6 +105,7 @@ async function handleProviderSignup({ email, name }: { email: string; name: stri
         email,
         name,
         emailVerified: new Date(),
+        timeZone: timeZone ?? "America/Vancouver", // TODO: set via request?
         identityProvider: IdentityProvider.CAL,
       },
     });
