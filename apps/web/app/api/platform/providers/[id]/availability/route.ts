@@ -70,7 +70,7 @@ async function getHandler(req: NextRequest, { params }: { params: Promise<Params
     overrides: schedule.availability
       .filter((slot) => slot.date)
       .map((slot) => ({
-        date: slot.date.toISOString().substring(0, 10), // "2025-12-07"
+        date: slot.date?.toISOString().substring(0, 10), // "2025-12-07"
         startTime: slot.startTime.toISOString().substring(11, 16), // "10:30"
         endTime: slot.endTime.toISOString().substring(11, 16), // "17:10"
       })),
@@ -101,7 +101,7 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
     const overrides = schedule.dateOverrides ?? [];
     const overrideAvailability = overrides.map((override) => {
       return {
-        date: startDate,
+        date: override.start,
         startTime: override.start,
         endTime: override.end,
       };
