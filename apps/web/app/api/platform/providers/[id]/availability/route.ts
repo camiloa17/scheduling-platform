@@ -4,7 +4,36 @@ import { parseRequestData } from "app/api/parseRequestData";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
+import type { Dayjs } from "@calcom/dayjs";
+import { getUserAvailabilityService } from "@calcom/lib/di/containers/GetUserAvailability";
 import { prisma } from "@calcom/prisma";
+
+const querySchema = z.object({
+  dateFrom: z.string().min(1, "dateFrom is required"),
+  dateTo: z.string().min(1, "dateTo is required"),
+  eventTypeId: z.coerce.number().int().positive().optional(),
+  duration: z.coerce.number().int().positive().optional(),
+});
+
+function toIsoRange(range: { start: Dayjs; end: Dayjs }) {
+  return {
+    start: range.start.toISOString(),
+    end: range.end.toISOString(),
+  };
+}
+
+function toIsoDateRange(range: { start: Date; end: Date }) {
+  return {
+    start: range.start.toISOString(),
+    end: range.end.toISOString(),
+  };
+}
+
+function minutesToTime(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
+}
 
 const dateOverrideSchema = z.object({
   start: z.coerce.date(),
@@ -29,54 +58,52 @@ const availabilitySchema = z.object({
 
 async function getHandler(req: NextRequest, { params }: { params: Promise<Params> }) {
   const { id } = await params;
+
   if (typeof id !== "string") {
     return NextResponse.json({ error: "id is not a string" }, { status: 400 });
   }
-  const providerId = parseInt(id);
-  if (isNaN(providerId) || providerId <= 0) {
+
+  const providerId = parseInt(id, 10);
+  if (!Number.isFinite(providerId) || providerId <= 0) {
     return NextResponse.json({ error: "Invalid provider ID" }, { status: 400 });
   }
 
-  const schedules = await prisma.schedule.findMany({
-    where: { userId: providerId },
-    select: {
-      id: true,
-      name: true,
-      timeZone: true,
-      userId: true,
-      availability: {
-        select: {
-          id: true,
-          days: true,
-          startTime: true,
-          endTime: true,
-          scheduleId: true,
-          date: true,
-        },
-      },
-    },
-  });
-  const cleanedSchedules = schedules.map((schedule) => ({
-    id: schedule.id,
-    name: schedule.name,
-    timeZone: schedule.timeZone,
-    availability: schedule.availability
-      .filter((slot) => !slot.date)
-      .map((slot) => ({
-        days: slot.days,
-        startTime: slot.startTime.toISOString().substring(11, 16), // "09:00"
-        endTime: slot.endTime.toISOString().substring(11, 16), // "17:00"
-      })),
-    overrides: schedule.availability
-      .filter((slot) => slot.date)
-      .map((slot) => ({
-        date: slot.date?.toISOString().substring(0, 10), // "2025-12-07"
-        startTime: slot.startTime.toISOString().substring(11, 16), // "10:30"
-        endTime: slot.endTime.toISOString().substring(11, 16), // "17:10"
-      })),
-  }));
+  const searchParams = Object.fromEntries(req.nextUrl.searchParams.entries());
+  const { dateFrom, dateTo, eventTypeId, duration } = querySchema.parse(searchParams);
 
-  return NextResponse.json({ schedules: cleanedSchedules });
+  const userAvailabilityService = getUserAvailabilityService();
+  const availability = await userAvailabilityService.getUserAvailability({
+    userId: providerId,
+    dateFrom,
+    dateTo,
+    eventTypeId,
+    duration,
+    returnDateOverrides: true,
+    bypassBusyCalendarTimes: false,
+  });
+
+  const responsePayload = {
+    providerId,
+    timeZone: availability.timeZone,
+    availability: availability.dateRanges.map((range) => toIsoRange(range)),
+    availabilityExcludingOutOfOffice: availability.oooExcludedDateRanges.map((range) => toIsoRange(range)),
+    overrides: availability.dateOverrides.map((range) => toIsoDateRange(range)),
+    workingHours: availability.workingHours.map((hours) => ({
+      days: hours.days,
+      startTime: minutesToTime(hours.startTime),
+      endTime: minutesToTime(hours.endTime),
+    })),
+    busy: availability.busy.map((busy) => ({
+      start: busy.start,
+      end: busy.end,
+      title: busy.title,
+      source: busy.source,
+    })),
+    datesOutOfOffice: availability.datesOutOfOffice,
+    currentSeats: availability.currentSeats,
+  };
+
+  return NextResponse.json(responsePayload);
 }
 
 async function postHandler(req: NextRequest, { params }: { params: Promise<Params> }) {
@@ -91,37 +118,64 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
   const body = await parseRequestData(req);
   const data = availabilitySchema.parse(body);
 
+  await prisma.availability.deleteMany({
+    where: { userId: providerId },
+  });
+
   // Clear existing schedules
   await prisma.schedule.deleteMany({
     where: { userId: providerId },
   });
+
+  const user = await prisma.user.findUnique({
+    where: { id: providerId },
+    select: { timeZone: true },
+  });
+  if (!user) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
 
   // Create new schedules
   for (const schedule of data.schedules) {
     const overrides = schedule.dateOverrides ?? [];
     const overrideAvailability = overrides.map((override) => {
       return {
-        date: override.start,
-        startTime: override.start,
-        endTime: override.end,
+        date: new Date(override.start),
+        startTime: new Date(override.start),
+        endTime: new Date(override.end),
+        userId: providerId,
       };
     });
-    const weeklyAvailability = schedule.availability.map((slot) => ({
-      days: slot.days,
-      startTime: new Date(`1970-01-01T${slot.startTime}:00.000Z`),
-      endTime: new Date(`1970-01-01T${slot.endTime}:00.000Z`),
-    }));
+    const weeklyAvailability = schedule.availability.map((slot) => {
+      const [startHour, startMin] = slot.startTime.split(":").map(Number);
+      const [endHour, endMin] = slot.endTime.split(":").map(Number);
+
+      // Remove the offset adjustment - just store the naive time
+      return {
+        days: slot.days,
+        startTime: new Date(Date.UTC(1970, 0, 1, startHour, startMin, 0)),
+        endTime: new Date(Date.UTC(1970, 0, 1, endHour, endMin, 0)),
+        userId: providerId,
+      };
+    });
+
     const availabilityEntries = [...weeklyAvailability, ...overrideAvailability];
-    await prisma.schedule.create({
+    const createdSchedule = await prisma.schedule.create({
       data: {
         name: schedule.name,
         userId: providerId,
+        timeZone: user.timeZone,
         availability: availabilityEntries.length
           ? {
               create: availabilityEntries,
             }
           : undefined,
       },
+    });
+
+    await prisma.user.update({
+      where: { id: providerId },
+      data: { defaultScheduleId: createdSchedule.id },
     });
   }
 
