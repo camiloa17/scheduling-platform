@@ -1,13 +1,13 @@
 import type { Params } from "app/_types";
 import { defaultResponderForAppDir } from "app/api/defaultResponderForAppDir";
 import { parseRequestData } from "app/api/parseRequestData";
-import dayjs, { type Dayjs } from "@calcom/dayjs";
-import handleNewBooking from "@calcom/features/bookings/lib/handleNewBooking";
-import { getUserAvailabilityService } from "@calcom/lib/di/containers/GetUserAvailability";
-import { HttpError } from "@calcom/lib/http-error";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
+import dayjs from "@calcom/dayjs";
+import handleNewBooking from "@calcom/features/bookings/lib/handleNewBooking";
+import { getUserAvailabilityService } from "@calcom/lib/di/containers/GetUserAvailability";
+import { HttpError } from "@calcom/lib/http-error";
 import { prisma } from "@calcom/prisma";
 import { CreationSource } from "@calcom/prisma/enums";
 
@@ -102,7 +102,9 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
 
   const eventMetadata = (eventType.metadata as { multipleDuration?: unknown } | null) ?? null;
   const allowedDurations = Array.isArray(eventMetadata?.multipleDuration)
-    ? eventMetadata.multipleDuration.filter((value): value is number => typeof value === "number" && value > 0)
+    ? eventMetadata.multipleDuration.filter(
+        (value): value is number => typeof value === "number" && value > 0
+      )
     : null;
 
   let durationToUse: number;
@@ -174,7 +176,10 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
   });
 
   if (!slotAvailable) {
-    return NextResponse.json({ error: "Provider is no longer available for the requested time" }, { status: 409 });
+    return NextResponse.json(
+      { error: "Provider is no longer available for the requested time" },
+      { status: 409 }
+    );
   }
 
   const bookingData = {

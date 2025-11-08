@@ -1,79 +1,132 @@
 import type { Params } from "app/_types";
 import { defaultResponderForAppDir } from "app/api/defaultResponderForAppDir";
+import { parseRequestData } from "app/api/parseRequestData";
 import { NextResponse, type NextRequest } from "next/server";
-import type { Dayjs } from "@calcom/dayjs";
-import { getUserAvailabilityService } from "@calcom/lib/di/containers/GetUserAvailability";
 import { z } from "zod";
 
-const querySchema = z.object({
-  dateFrom: z.string().min(1, "dateFrom is required"),
-  dateTo: z.string().min(1, "dateTo is required"),
-  eventTypeId: z.coerce.number().int().positive().optional(),
-  duration: z.coerce.number().int().positive().optional(),
+import { prisma } from "@calcom/prisma";
+
+const dateOverrideSchema = z.object({
+  start: z.coerce.date(),
+  end: z.coerce.date(),
 });
 
-function toIsoRange(range: { start: Dayjs; end: Dayjs }) {
-  return {
-    start: range.start.toISOString(),
-    end: range.end.toISOString(),
-  };
-}
-
-function toIsoDateRange(range: { start: Date; end: Date }) {
-  return {
-    start: range.start.toISOString(),
-    end: range.end.toISOString(),
-  };
-}
+const availabilitySchema = z.object({
+  schedules: z.array(
+    z.object({
+      name: z.string().default("Working Hours"),
+      availability: z.array(
+        z.object({
+          days: z.array(z.number().min(0).max(6)),
+          startTime: z.string(), // "09:00"
+          endTime: z.string(), // "17:00"
+        })
+      ),
+      dateOverrides: z.array(dateOverrideSchema).optional(),
+    })
+  ),
+});
 
 async function getHandler(req: NextRequest, { params }: { params: Promise<Params> }) {
   const { id } = await params;
-
   if (typeof id !== "string") {
     return NextResponse.json({ error: "id is not a string" }, { status: 400 });
   }
-
-  const providerId = parseInt(id, 10);
-  if (!Number.isFinite(providerId) || providerId <= 0) {
+  const providerId = parseInt(id);
+  if (isNaN(providerId) || providerId <= 0) {
     return NextResponse.json({ error: "Invalid provider ID" }, { status: 400 });
   }
 
-  const searchParams = Object.fromEntries(req.nextUrl.searchParams.entries());
-  const { dateFrom, dateTo, eventTypeId, duration } = querySchema.parse(searchParams);
+  const schedules = await prisma.schedule.findMany({
+    where: { userId: providerId },
+    select: {
+      id: true,
+      name: true,
+      timeZone: true,
+      userId: true,
+      availability: {
+        select: {
+          id: true,
+          days: true,
+          startTime: true,
+          endTime: true,
+          scheduleId: true,
+          date: true,
+        },
+      },
+    },
+  });
+  const cleanedSchedules = schedules.map((schedule) => ({
+    id: schedule.id,
+    name: schedule.name,
+    timeZone: schedule.timeZone,
+    availability: schedule.availability
+      .filter((slot) => !slot.date)
+      .map((slot) => ({
+        days: slot.days,
+        startTime: slot.startTime.toISOString().substring(11, 16), // "09:00"
+        endTime: slot.endTime.toISOString().substring(11, 16), // "17:00"
+      })),
+    overrides: schedule.availability
+      .filter((slot) => slot.date)
+      .map((slot) => ({
+        date: slot.date.toISOString().substring(0, 10), // "2025-12-07"
+        startTime: slot.startTime.toISOString().substring(11, 16), // "10:30"
+        endTime: slot.endTime.toISOString().substring(11, 16), // "17:10"
+      })),
+  }));
 
-  const userAvailabilityService = getUserAvailabilityService();
-  const availability = await userAvailabilityService.getUserAvailability({
-    userId: providerId,
-    dateFrom,
-    dateTo,
-    eventTypeId,
-    duration,
-    returnDateOverrides: true,
-    bypassBusyCalendarTimes: false,
+  return NextResponse.json({ schedules: cleanedSchedules });
+}
+
+async function postHandler(req: NextRequest, { params }: { params: Promise<Params> }) {
+  const { id } = await params;
+  if (typeof id !== "string") {
+    return NextResponse.json({ error: "id is not a string" }, { status: 400 });
+  }
+  const providerId = parseInt(id);
+  if (isNaN(providerId) || providerId <= 0) {
+    return NextResponse.json({ error: "Invalid provider ID" }, { status: 400 });
+  }
+  const body = await parseRequestData(req);
+  const data = availabilitySchema.parse(body);
+
+  // Clear existing schedules
+  await prisma.schedule.deleteMany({
+    where: { userId: providerId },
   });
 
-  const responsePayload = {
-    providerId,
-    timeZone: availability.timeZone,
-    availability: availability.dateRanges.map((range) => toIsoRange(range)),
-    availabilityExcludingOutOfOffice: availability.oooExcludedDateRanges.map((range) => toIsoRange(range)),
-    overrides: availability.dateOverrides.map((range) => toIsoDateRange(range)),
-    workingHours: availability.workingHours.map((hours) => ({
-      days: hours.days,
-      startTimeMinutes: hours.startTime,
-      endTimeMinutes: hours.endTime,
-    })),
-    busy: availability.busy.map((busy) => ({
-      start: busy.start,
-      end: busy.end,
-      title: busy.title,
-      source: busy.source,
-    })),
-    datesOutOfOffice: availability.datesOutOfOffice,
-    currentSeats: availability.currentSeats,
-  };
+  // Create new schedules
+  for (const schedule of data.schedules) {
+    const overrides = schedule.dateOverrides ?? [];
+    const overrideAvailability = overrides.map((override) => {
+      return {
+        date: startDate,
+        startTime: override.start,
+        endTime: override.end,
+      };
+    });
+    const weeklyAvailability = schedule.availability.map((slot) => ({
+      days: slot.days,
+      startTime: new Date(`1970-01-01T${slot.startTime}:00.000Z`),
+      endTime: new Date(`1970-01-01T${slot.endTime}:00.000Z`),
+    }));
+    const availabilityEntries = [...weeklyAvailability, ...overrideAvailability];
+    await prisma.schedule.create({
+      data: {
+        name: schedule.name,
+        userId: providerId,
+        availability: availabilityEntries.length
+          ? {
+              create: availabilityEntries,
+            }
+          : undefined,
+      },
+    });
+  }
 
-  return NextResponse.json(responsePayload);
+  return NextResponse.json({ success: true });
 }
 
 export const GET = defaultResponderForAppDir(getHandler);
+export const POST = defaultResponderForAppDir(postHandler);

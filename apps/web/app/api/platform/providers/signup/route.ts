@@ -60,17 +60,30 @@ async function handler(req: NextRequest) {
   });
 }
 
-async function handleProviderSignup({
-  email,
-  name,
-}: {
-  email: string;
-  name: string;
-}) {
+async function handleProviderSignup({ email, name }: { email: string; name: string }) {
   const existingUser = await prisma.user.findUnique({ where: { email } });
 
   if (existingUser) {
-    return NextResponse.json({ message: "Provider already exists for this email" }, { status: 409 });
+    // Find all user events types
+    const eventTypes = await prisma.eventType.findMany({
+      where: { userId: existingUser.id },
+    });
+    return NextResponse.json({
+      message: "Provider already exists",
+      provider: {
+        id: existingUser.id,
+        email: existingUser.email,
+        username: existingUser.username,
+        name: existingUser.name,
+      },
+      eventTypes: eventTypes.map((eventType) => ({
+        id: eventType.id,
+        slug: eventType.slug,
+        title: eventType.title,
+        length: eventType.length,
+        durations: EVENT_DURATION_OPTIONS,
+      })),
+    });
   }
 
   const tempUsername = `provider-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
