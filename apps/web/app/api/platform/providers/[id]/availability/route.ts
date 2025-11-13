@@ -2,11 +2,16 @@ import type { Params } from "app/_types";
 import { defaultResponderForAppDir } from "app/api/defaultResponderForAppDir";
 import { parseRequestData } from "app/api/parseRequestData";
 import { NextResponse, type NextRequest } from "next/server";
+import tzdata from "tzdata";
 import { z } from "zod";
 
 import type { Dayjs } from "@calcom/dayjs";
 import { getUserAvailabilityService } from "@calcom/lib/di/containers/GetUserAvailability";
 import { prisma } from "@calcom/prisma";
+
+export const timeZone = z.string().refine((tz: string) => Object.keys(tzdata.zones).includes(tz), {
+  message: `Expected one of the following: ${Object.keys(tzdata.zones).join(", ")}`,
+});
 
 const querySchema = z.object({
   dateFrom: z.string().min(1, "dateFrom is required"),
@@ -54,6 +59,7 @@ const availabilitySchema = z.object({
       dateOverrides: z.array(dateOverrideSchema).optional(),
     })
   ),
+  timeZone,
 });
 
 async function getHandler(req: NextRequest, { params }: { params: Promise<Params> }) {
@@ -133,6 +139,13 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
   });
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+  if (!user.timeZone || user.timeZone !== data.timeZone) {
+    user.timeZone = data.timeZone;
+    await prisma.user.update({
+      where: { id: providerId },
+      data: { timeZone: data.timeZone },
+    });
   }
 
   // Create new schedules
