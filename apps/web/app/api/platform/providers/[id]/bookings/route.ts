@@ -172,7 +172,12 @@ async function postHandler(req: NextRequest, { params }: { params: Promise<Param
   const slotAvailable = availability.dateRanges.some((range) => {
     const rangeStart = dayjs(range.start);
     const rangeEnd = dayjs(range.end);
-    return !start.isBefore(rangeStart) && !computedEnd.isAfter(rangeEnd);
+
+    // Check if the requested slot fits ENTIRELY within an available range
+    return (
+      (start.isSame(rangeStart) || start.isAfter(rangeStart)) &&
+      (computedEnd.isSame(rangeEnd) || computedEnd.isBefore(rangeEnd))
+    );
   });
 
   if (!slotAvailable) {
